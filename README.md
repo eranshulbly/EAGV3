@@ -27,12 +27,8 @@ substrate and an MCP tool server.
 
 Persistent state under `state/`:
 
-- `state/memory.json` — `MemoryItem` rows (facts, preferences, tool_outcomes,
-  scratchpad). Survives across runs — that is how Query C's run 2 finds
-  mom's birthday without re-asking.
-- `state/artifacts/<hash>.bin` + `<hash>.json` — content-addressable byte
-  store. Memory holds only `art:<hash>` handles; Decision sees raw bytes
-  only when Perception attaches them to a goal.
+- `state/memory.json` — `MemoryItem` rows (`fact` / `preference` / `tool_outcome` / `scratchpad`). Survives across runs.
+- `state/artifacts/<hash>.bin` + `<hash>.json` — content-addressable byte store. Memory holds only `art:<hash>` handles; Decision sees raw bytes only when Perception attaches them to a goal.
 
 ## Files
 
@@ -40,73 +36,79 @@ Persistent state under `state/`:
 |------|------|
 | `schemas.py` | All Pydantic v2 boundary contracts (internal + LLM-wire) |
 | `memory.py`  | `Memory` service — keyword-search `read`, LLM-classified `remember`, deterministic `record_outcome` |
-| `perception.py` | `Perception.observe` — goal decomposition + done-tracking + artifact attach (Gemini-pinned) |
-| `decision.py` | `Decision.next_step` — one tool call OR one final answer |
+| `perception.py` | `Perception.observe` — goal decomposition + done-tracking + artifact attach (Gemini-pinned, retry+fallback) |
+| `decision.py` | `Decision.next_step` — one tool call OR one final answer (retry+fallback on 5xx) |
 | `action.py`  | `execute` — pure MCP dispatch with `art:` guard and 4KB artifact threshold |
 | `artifacts.py` | `ArtifactStore` — `art:<sha256-prefix>` handles, dedup by content |
 | `agent6.py`  | Main loop + CLI entrypoint |
+| `gateway_client.py` | Loads `LLM` from `llm_gatewayV3/client.py` without sys.path pollution |
+| `mcp_server.py` | 9 MCP tools over stdio: web_search, fetch_url, get_time, currency_convert, read_file, list_dir, create_file, update_file, edit_file |
+| `llm_gatewayV3/` | FastAPI gateway with `auto_route`, `provider="g"`, `response_format`, and `tools` translation across 7 providers |
 
 ## Setup
-
-The gateway and MCP server must be running. The `.env` at `S6/.env`
-contains the API keys. Required keys: `GEMINI_API_KEY`, `GROQ_API_KEY`,
-`CEREBRAS_API_KEY`, `NVIDIA_API_KEY`, `OPEN_ROUTER_API_KEY`,
-`GITHUB_ACCESS_TOKEN` (for the gateway) plus `TAVILY_API_KEY` (for MCP
-`web_search`; falls back to DuckDuckGo if unset).
 
 ```bash
 # 1. Start the LLM gateway V3 (long-lived service on port 8101)
 cd S6/llm_gatewayV3
 ./run.sh &
-# verify:
 curl -s http://localhost:8101/v1/routers >/dev/null && echo OK
 
-# 2. Install Python deps used by agent6 and the MCP server.
-#    The MCP server is spawned over stdio by agent6.py — these must be
-#    in whichever Python you use to run agent6.py.
+# 2. Install Python deps used by agent6 + the MCP server
 pip install mcp httpx pydantic ddgs crawl4ai tavily-python python-dotenv
 python -m playwright install chromium      # crawl4ai needs Chromium
 ```
 
-## Running the four target queries
+Required `.env` keys at `S6/.env`: `GEMINI_API_KEY`, `GROQ_API_KEY`, `CEREBRAS_API_KEY`, `NVIDIA_API_KEY`, `OPEN_ROUTER_API_KEY`, `GITHUB_ACCESS_TOKEN`, `TAVILY_API_KEY` (last one optional — falls back to DuckDuckGo).
 
-Each query should be run from a **clean state** (the first three) and from
-the previous run's state (Query C run 2):
+## Running the four target queries
 
 ```bash
 cd S6
 
-# Query A — Shannon Wikipedia (artifact attach path)
+# A — Shannon Wikipedia
 rm -rf state/ sandbox/
-python agent6.py "Fetch https://en.wikipedia.org/wiki/Claude_Shannon and tell me his birth date, death date, and three key contributions to information theory."
+python -u agent6.py "Fetch https://en.wikipedia.org/wiki/Claude_Shannon and tell me his birth date, death date, and three key contributions to information theory."
 
-# Query B — Tokyo + weather (multi-goal + memory carryover)
+# B — Tokyo + weather
 rm -rf state/ sandbox/
-python agent6.py "Find 3 family-friendly things to do in Tokyo this weekend. Check Saturday's weather forecast there and tell me which one is most appropriate."
+python -u agent6.py "Find 3 family-friendly things to do in Tokyo this weekend. Check Saturday's weather forecast there and tell me which one is most appropriate."
 
-# Query C run 1 — durable memory write
+# C run 1 — durable memory write
 rm -rf state/ sandbox/
-python agent6.py "My mom's birthday is 15 May 2026. Remember that and give me a calendar reminder for two weeks before and on the day."
+python -u agent6.py "My mom's birthday is 15 May 2026. Remember that and give me a calendar reminder for two weeks before and on the day."
 
-# Query C run 2 — durable memory read (DO NOT clear state/)
-python agent6.py "When is mom's birthday?"
+# C run 2 — durable memory read (DO NOT clear state/)
+python -u agent6.py "When is mom's birthday?"
 
-# Query D — multi-source synthesis
+# D — multi-source synthesis
 rm -rf state/ sandbox/
-python agent6.py "Search for 'Python asyncio best practices', read the top 3 results, and give me a short numbered list of the advice they agree on."
+python -u agent6.py "Search for 'Python asyncio best practices', read the top 3 results, and give me a short numbered list of the advice they agree on."
 ```
 
-## Prompts and Validation Schemas (PoP — Proof of Practice)
+## Iteration counts
 
-These are the verbatim system prompts and the Pydantic-generated JSON
-schemas that are sent to the gateway as `response_format`. They are the
-typed contract between the agent and the LLM. The schemas are generated
-at runtime by `<Model>.model_json_schema()`, so they cannot drift from
-the Pydantic class definitions in [schemas.py](schemas.py).
+| Query | Iters | Target | 2× cap | Status |
+|-------|-------|------------------|-------|--------|
+| A — Shannon Wikipedia | 4 | 3 | 6 | ✅ |
+| B — Tokyo + weather | 4 | 6 | 12 | ✅ |
+| C run 1 — durable write | 3 | 4 | 8 | ✅ fact persisted |
+| C run 2 — durable read | 1 | 2 | 4 | ✅ found in memory alone |
+| D — asyncio synthesis | 4 | 5–7 | 14 | ✅ |
+
+## Perception's Prompt + PoP Validation JSON
+
+> **PoP** = *Prompt of Prompts* — the JSON Schema sent to the LLM as
+> `response_format`. It's the meta-prompt that constrains every Perception
+> output into a typed `Observation` (no free-text drift, no hallucinated
+> fields). The schema is generated at runtime by
+> `PerceptionOutput.model_json_schema()`, so it cannot drift from
+> [schemas.py](schemas.py).
+
+The Decision role uses a different validation mechanism (MCP tool list +
+`tool_choice="auto"` instead of `response_format`), and the memory
+classifier has its own PoP. All three are documented below.
 
 ### Perception system prompt
-
-From [perception.py:30-62](perception.py#L30-L62):
 
 ```
 You are the Perception role in a multi-step agent.
@@ -143,13 +145,7 @@ Output: a JSON object {"goals": [{"text", "done", "artifact_index"}, ...]}
 matching the provided response_format schema. No prose.
 ```
 
-The user message is built each iteration from `USER QUERY`, `MEMORY HITS`
-(indexed `[i]` so the model can refer to artifacts by position),
-`HISTORY` (last 12 events), and `PRIOR GOALS`.
-
 ### Perception validation JSON (`PerceptionOutput.model_json_schema()`)
-
-This is exactly what the gateway receives as `response_format.schema`:
 
 ```json
 {
@@ -184,13 +180,9 @@ This is exactly what the gateway receives as `response_format.schema`:
 }
 ```
 
-Note: there is no `id` field — goals carry **positional identity** in this
-schema. The outer loop maps `goals[i]` back to the prior goal's id by
-position, so the model cannot invent a stale identifier.
+The output schema has no `id` field — goals carry **positional identity**. The outer loop maps `goals[i]` back to the prior goal's id by position, so the model cannot invent a stale identifier.
 
 ### Decision system prompt
-
-From [decision.py:13-39](decision.py#L13-L39):
 
 ```
 You are the Decision role in a multi-step agent.
@@ -230,17 +222,9 @@ RULES:
 5. One step at a time. Do not chain multiple tool calls in one response.
 ```
 
-### Decision validation — tool list (not `response_format`)
+### Decision validation — tool list
 
-Decision does not use a Pydantic `response_format`. Instead it passes
-`tools=[...]` and `tool_choice="auto"` to the gateway. The validation is
-that the model must either (a) return plain text (the answer) OR (b) emit
-exactly one `tool_calls[]` entry whose `name` is one of the MCP tools and
-whose `arguments` validate against that tool's `input_schema`.
-
-The MCP tool list is loaded once at boot via `session.list_tools()` and
-converted to gateway `ToolDef` shape by `mcp_tools_for_decision` in
-[decision.py:42-50](decision.py#L42-L50):
+Decision does not use `response_format`. It passes `tools=[…]` + `tool_choice="auto"` and validates the response is either plain text OR exactly one `tool_calls[]` entry against the MCP tool's `input_schema`. The tool list is loaded once at boot via `session.list_tools()` and converted to gateway `ToolDef` shape:
 
 ```python
 def mcp_tools_for_decision(mcp_tools):
@@ -254,20 +238,17 @@ def mcp_tools_for_decision(mcp_tools):
     ]
 ```
 
-The internal canonical shape that `Decision.next_step` returns is
-`DecisionOutput`, validated by Pydantic (exactly one of `answer`/`tool_call`
-populated — see [schemas.py:67-82](schemas.py#L67-L82)):
+The internal canonical shape (`DecisionOutput`, [schemas.py:67-82](schemas.py#L67-L82)) is validated by Pydantic — exactly one of `answer` / `tool_call` populated:
 
 ```json
 {
   "$defs": {
     "ToolCall": {
       "properties": {
-        "name":      { "type": "string", "title": "Name" },
-        "arguments": { "additionalProperties": true, "type": "object", "title": "Arguments" }
+        "name":      { "type": "string" },
+        "arguments": { "additionalProperties": true, "type": "object" }
       },
       "required": ["name"],
-      "title": "ToolCall",
       "type": "object"
     }
   },
@@ -275,16 +256,13 @@ populated — see [schemas.py:67-82](schemas.py#L67-L82)):
     "answer":    { "anyOf": [ { "type": "string" }, { "type": "null" } ], "default": null },
     "tool_call": { "anyOf": [ { "$ref": "#/$defs/ToolCall" }, { "type": "null" } ], "default": null }
   },
-  "title": "DecisionOutput",
   "type": "object"
 }
 ```
 
 ### Memory classifier validation JSON (`MemoryClassification.model_json_schema()`)
 
-This is the third LLM call in the system — `memory.remember(raw_text, …)`
-classifies the user's query into a typed item. Sent to the gateway as
-`response_format.schema`:
+Sent to the gateway as `response_format.schema` on every `memory.remember()` call:
 
 ```json
 {
@@ -293,287 +271,260 @@ classifies the user's query into a typed item. Sent to the gateway as
   "properties": {
     "kind": {
       "enum": ["fact", "preference", "tool_outcome", "scratchpad"],
-      "title": "Kind",
       "type": "string"
     },
-    "keywords":   { "items": { "type": "string" }, "title": "Keywords", "type": "array" },
-    "descriptor": { "title": "Descriptor", "type": "string" },
-    "value":      { "additionalProperties": true, "type": "object", "title": "Value" }
+    "keywords":   { "items": { "type": "string" }, "type": "array" },
+    "descriptor": { "type": "string" },
+    "value":      { "additionalProperties": true, "type": "object" }
   },
   "required": ["kind", "keywords", "descriptor", "value"],
-  "title": "MemoryClassification",
   "type": "object"
 }
 ```
 
-This schema produced the durable fact for Query C run 1:
+## Captured terminal outputs
 
-```json
-{
-  "kind": "fact",
-  "keywords": ["mom", "birthday", "may", "2026"],
-  "descriptor": "The user's mother's birthday is on May 15, 2026.",
-  "value": {"entity": "mother", "attribute": "birthday", "value": "2026-05-15"}
-}
-```
-
-— which survived into run 2 and let Perception mark the read goal done in
-one iteration without a single tool dispatch.
-
-## Iteration counts (all within bound)
-
-| Query | Iters | Documented target | 2× cap | Result |
-|-------|-------|------------------|-------|--------|
-| A — Shannon Wikipedia | 4 | 3 | 6 | ✅ |
-| B — Tokyo + weather | 5 | 6 | 12 | ✅ |
-| C run 1 — durable write | 3 | 4 | 8 | ✅ fact persisted |
-| C run 2 — durable read | 1 | 2 | 4 | ✅ found in memory alone |
-| D — asyncio synthesis | 3 | 5–7 | 14 | ✅ |
-
-## Captured terminal output
-
-Full unedited traces are in [traces/](../S5/traces/) (one file per query). The
-abridged versions below show the role progression for each query.
-
-### Query A trace — 4 iterations (target 3, max 6) ✅
+### Query A — Shannon Wikipedia (4 iterations)
 
 ```
-[boot] run_id=8fbbaafc
-[boot] query='Fetch https://en.wikipedia.org/wiki/Claude_Shannon and tell me his birth date, death date, and three key contributions to information theory.'
+[boot] run_id=99d46eae
+[boot] query='Fetch https://en.wikipedia.org/wiki/Claude_Shannon and tell me his\nbirth date, death date, and three key contributions to information\ntheory.'
 [boot] mcp tools: ['web_search', 'fetch_url', 'get_time', 'currency_convert', 'read_file', 'list_dir', 'create_file', 'update_file', 'edit_file']
 
 ─── iter 1 ─────────────────────────────────────
 [memory.read]   0 hits
-[perception]    [open] Fetch Wikipedia article for Claude Shannon
-[perception]    [open] Extract birth and death dates
-[perception]    [open] Extract three key contributions to information theory
+[perception]    [open] Fetch Claude Shannon wikipedia page
+[perception]    [open] Identify birth and death dates
+[perception]    [open] Identify three information theory contributions
 [decision]      TOOL_CALL: fetch_url({"url": "https://en.wikipedia.org/wiki/Claude_Shannon"})
-[action]        → [artifact art:59d30a3e7090a930, 263047 bytes] preview: { "status": 200, "content_type": "text/markdown", "length_bytes": 256952, ...
+[action]        → [artifact art:a5444f83543328d9, 262128 bytes] preview: {   "status": 200,   "content_type": "text/markdown",   "length_bytes": 256033,   "text": "[Jump to content](https://en.wikipedia.org/wiki/Claude...
 
 ─── iter 2 ─────────────────────────────────────
 [memory.read]   1 hits
-                - [tool_outcome] art:59d30a3e7090a930 fetch_url(...) -> ...
-[perception]    [done] Fetch Wikipedia article for Claude Shannon
-[perception]    [open] Extract birth and death dates  attach=art:59d30a3e7090a930
-[perception]    [open] Extract three key contributions to information theory
-[attach]        art:59d30a3e7090a930 (263047 bytes)
-[decision]      ANSWER: Claude Shannon was born on April 30, 1916, and passed away on February 24, 2001.
+                - [tool_outcome] art:a5444f83543328d9 fetch_url(...) -> [artifact art:a5444f83543328d9, 262128 bytes] preview: {   "status": 200,   "conte
+[perception]    [done] Fetch Claude Shannon wikipedia page
+[perception]    [open] Identify birth and death dates  attach=art:a5444f83543328d9
+[perception]    [open] Identify three information theory contributions
+[attach]        art:a5444f83543328d9 (262128 bytes)
+[decision]      ANSWER: Claude Shannon was born on April 30, 1916, and he passed away on February 24, 2001.
 
 ─── iter 3 ─────────────────────────────────────
 [memory.read]   1 hits
-[perception]    [done] Fetch Wikipedia article for Claude Shannon
-[perception]    [done] Extract birth and death dates
-[perception]    [open] Extract three key contributions to information theory  attach=art:59d30a3e7090a930
-[attach]        art:59d30a3e7090a930 (263047 bytes)
-[decision]      ANSWER: Claude Shannon made several foundational contributions to information theory, as outlined in his work *A Mathematical Theory of Communication* (1948): ...
+[perception]    [done] Fetch Claude Shannon wikipedia page
+[perception]    [done] Identify birth and death dates
+[perception]    [open] Identify three information theory contributions  attach=art:a5444f83543328d9
+[attach]        art:a5444f83543328d9 (262128 bytes)
+[decision]      ANSWER: Claude Shannon's work established the field of information theory, and three key contributions include: ...
 
 ─── iter 4 ─────────────────────────────────────
 [memory.read]   1 hits
-[perception]    [done] Fetch Wikipedia article for Claude Shannon
-[perception]    [done] Extract birth and death dates
-[perception]    [done] Extract three key contributions to information theory
+[perception]    [done] Fetch Claude Shannon wikipedia page
+[perception]    [done] Identify birth and death dates
+[perception]    [done] Identify three information theory contributions
 
 [done] all 3 goals satisfied
 
 ============================================================
-FINAL: - Claude Shannon was born on April 30, 1916, and passed away on February 24, 2001.
+FINAL: - Claude Shannon was born on April 30, 1916, and he passed away on February 24, 2001.
 
-- Claude Shannon made several foundational contributions to information theory, as outlined in his work *A Mathematical Theory of Communication* (1948):
+- Claude Shannon's work established the field of information theory, and three key contributions include:
 
-*   **The Quantification of Information:** Shannon formally introduced the term "bit" and established the concept of entropy in information theory as a way to measure the uncertainty or information content in a message.
-*   **The Establishment of the Field:** He laid the theoretical foundation for the field of information theory, creating a mathematical framework that remains the "blueprint for the digital era."
-*   **Technological Enabling:** His work provided the basis for critical modern technologies, including data compression, error correction, and the fundamental principles enabling the development of the Internet, mobile telephony, and compact discs.
+1.  **Foundational Framework:** He authored the seminal 1948 paper, "A Mathematical Theory of Communication," which serves as the foundational "blueprint" for the digital era and the entire field of information theory.
+2.  **Introduction of the 'Bit':** Shannon formally introduced the term "bit" (binary digit) as the fundamental unit of information, a concept that underpins all digital computing and data storage.
+3.  **Concept of Entropy:** He pioneered the application of "entropy" to information theory, providing a rigorous mathematical way to measure the uncertainty or information content in data, which remains essential for modern data compression and transmission.
 ============================================================
 ```
 
-### Query B trace — 5 iterations (target 6, max 12) ✅
+### Query B — Tokyo activities + weather (4 iterations)
 
 ```
-[boot] run_id=91b30ef3
-[boot] query="Find 3 family-friendly things to do in Tokyo this weekend. Check Saturday's weather forecast there and tell me which one is most appropriate."
+[boot] run_id=b855cd4b
+[boot] query="Find 3 family-friendly things to do in Tokyo this weekend.\nCheck Saturday's weather forecast there and tell me which one\nis most appropriate."
+[boot] mcp tools: ['web_search', 'fetch_url', 'get_time', 'currency_convert', 'read_file', 'list_dir', 'create_file', 'update_file', 'edit_file']
 
 ─── iter 1 ─────────────────────────────────────
 [memory.read]   0 hits
-[perception]    [open] Identify three family-friendly activities in Tokyo
-[perception]    [open] Retrieve Saturday weather forecast for Tokyo
-[perception]    [open] Recommend most appropriate activity based on weather
-[decision]      TOOL_CALL: web_search({"query": "family-friendly activities in Tokyo", "max_results": 3})
-[action]        → [artifact art:42e849119dc7a5b6, 6628 bytes]
+[perception]    [open] Identify three family-friendly activities in Tokyo for the weekend.
+[perception]    [open] Retrieve Saturday's weather forecast for Tokyo.
+[perception]    [open] Recommend the best activity based on the weather.
+[decision]      TOOL_CALL: web_search({"query": "family-friendly activities Tokyo weekend", "max_results": 5})
+[action]        → [artifact art:7526d3964df898fc, 11269 bytes] preview: {   "title": "The best Tokyo Family-friendly activities 2026 - Free cancellation",   "url": "https://www.getyourguide.com/tokyo-l193/family-friend...
 
 ─── iter 2 ─────────────────────────────────────
-[perception]    [done] Identify three family-friendly activities in Tokyo
-[perception]    [open] Retrieve Saturday weather forecast for Tokyo
-[perception]    [open] Recommend most appropriate activity based on weather
-[decision]      TOOL_CALL: web_search({"query": "Tokyo weather forecast Saturday"})
-[action]        → [artifact art:26ec028432d5b5e5, 8973 bytes]
+[memory.read]   1 hits
+[perception]    [done] Identify three family-friendly activities in Tokyo for the weekend.
+[perception]    [open] Retrieve Saturday's weather forecast for Tokyo.
+[perception]    [open] Recommend the best activity based on the weather.
+[decision]      TOOL_CALL: web_search({"max_results": 5, "query": "Tokyo weather forecast Saturday"})
+[action]        → [artifact art:d64b0f8bf8b85828, 8985 bytes] preview: {   "title": "Tokyo Weather in May 2026: Not Too Hot, Not Too Crowded",   "url": "https://www.japanhighlights.com/japan/tokyo/may-weather",   "snip...
 
 ─── iter 3 ─────────────────────────────────────
-[perception]    [done] Identify three family-friendly activities in Tokyo
-[perception]    [done] Retrieve Saturday weather forecast for Tokyo
-[perception]    [open] Recommend most appropriate activity based on weather  attach=art:42e849119dc7a5b6
-[attach]        art:42e849119dc7a5b6 (6628 bytes)
-[decision]      TOOL_CALL: web_search({"query": "Tokyo weather forecast"})
+[memory.read]   2 hits
+[perception]    [done] Identify three family-friendly activities in Tokyo for the weekend.
+[perception]    [done] Retrieve Saturday's weather forecast for Tokyo.
+[perception]    [open] Recommend the best activity based on the weather.  attach=art:7526d3964df898fc
+[attach]        art:7526d3964df898fc (11269 bytes)
+[decision]      ANSWER: Since the weather in Tokyo during May is generally pleasant—often described as "not too hot, not too crowded"—it is a fantastic time for both indoor and outdoor family-friendly activities. ...
 
 ─── iter 4 ─────────────────────────────────────
-[perception]    [open] Recommend most appropriate activity based on weather  attach=art:42e849119dc7a5b6
-[attach]        art:42e849119dc7a5b6 (6628 bytes)
-[decision]      ANSWER: Given that Tokyo's weather can vary, here are some excellent family-friendly activity recommendations categorized by weather conditions: ...
+[memory.read]   2 hits
+[perception]    [done] Identify three family-friendly activities in Tokyo for the weekend.
+[perception]    [done] Retrieve Saturday's weather forecast for Tokyo.
+[perception]    [done] Recommend the best activity based on the weather.
 
-─── iter 5 ─────────────────────────────────────
-[perception]    [done] all 3 goals
+[done] all 3 goals satisfied
 
-FINAL: Given that Tokyo's weather can vary, here are some excellent family-friendly activity recommendations categorized by weather conditions:
+============================================================
+FINAL: Since the weather in Tokyo during May is generally pleasant—often described as "not too hot, not too crowded"—it is a fantastic time for both indoor and outdoor family-friendly activities. Based on the options available, here are the best recommendations:
 
-**For Clear or Pleasant Weather (Outdoor Activities):**
-*   Imperial Palace East Gardens — stroller-friendly historic gardens.
-*   Meiji Jingu — forested area in central Tokyo.
-*   Ueno Park & Nezu Shrine — open exploration, spring flower viewing.
+*   **For Indoor Fun (Weather-Proof & Engaging):**
+    *   **Warner Bros. Studio Tour Tokyo – The Making of Harry Potter:** This is a top-rated, large-scale indoor exhibit perfect for escaping any unexpected spring showers.
+    *   **Miraikan (National Museum of Emerging Science and Innovation):** Located in Odaiba, this is a highly interactive, hands-on museum that is excellent for children interested in science and technology.
+    *   **Pokémon Center & Café:** A massive hit for families; booking the themed café in advance provides a memorable, air-conditioned dining and entertainment experience.
 
-**For Rainy or Hot/Cold Weather (Indoor):**
-*   Tokyo Toy Museum — hands-on indoor play for young children.
-*   Miraikan (National Museum of Emerging Science).
-*   Tokyo Fire Museum — interactive fire safety exhibits.
-*   teamLab Planets — immersive digital art experience.
+*   **For Outdoor Exploration (Enjoying the May Weather):**
+    *   **Ueno Park & Zoo:** With the mild May temperatures, exploring the zoo (the oldest in Japan) and the surrounding park grounds is very comfortable.
+    *   **Sumida River Cruise:** A relaxing way to see the city from the water. It is a calm, scenic activity that is particularly pleasant when the weather is clear.
+    *   **Asakusa Cultural Exploration:** A visit to Senso-ji Temple is a classic experience; wandering the surrounding historic streets is much more enjoyable in temperate May weather than in the intense heat of summer.
 
-**All-Weather:** Tokyo Disney Resort; cultural workshops (sushi class, kimono tea ceremony).
+*   **Unique Cultural Experiences:**
+    *   **Family Sumo or Samurai Ninja Workshops:** These are highly-rated, engaging, and culturally immersive activities located in areas like Asakusa, suitable for various ages and available as indoor sessions if needed.
+
+**Recommendation:** Given the generally mild and pleasant conditions, I recommend a morning visit to **Ueno Zoo** to take advantage of the fresh air, followed by an afternoon at the **Miraikan Museum** in Odaiba for a balanced, high-quality family day.
+============================================================
 ```
 
-### Query C run 1 trace — 3 iterations (target 4, max 8) ✅
+### Query C run 1 — Mom's birthday durable write (3 iterations)
 
 ```
-[boot] run_id=dac88ec7
-[boot] query="My mom's birthday is 15 May 2026. Remember that and give me a calendar reminder for two weeks before and on the day."
-[memory.remember] fact: The user's mother's birthday is on May 15, 2026.
-                  keywords=['mom','birthday','may','2026']
+[boot] run_id=8741345c
+[boot] query="My mom's birthday is 15 May 2026. Remember that and give me\n       a calendar reminder for two weeks before and on the day."
+[memory.remember] fact: The user's mother has a birthday on May 15, 2026.
+                  keywords=['mom', 'birthday', 'may', '2026']
+[boot] mcp tools: ['web_search', 'fetch_url', 'get_time', 'currency_convert', 'read_file', 'list_dir', 'create_file', 'update_file', 'edit_file']
 
 ─── iter 1 ─────────────────────────────────────
 [memory.read]   1 hits
+                - [fact] The user's mother has a birthday on May 15, 2026.
 [perception]    [done] Store birthday date
-[perception]    [open] Create calendar reminder for May 1 2026
-[perception]    [open] Create calendar reminder for May 15 2026
-[decision]      TOOL_CALL: create_file({"path": "reminder_2026-05-01.txt", "content": "Reminder: Event on May 1, 2026.\nPlease add details about this event as needed."})
-[action]        → {"ok": true, "path": "reminder_2026-05-01.txt", "size_bytes": 78}
+[perception]    [open] Schedule reminder for May 1 2026
+[perception]    [open] Schedule reminder for May 15 2026
+[decision]      TOOL_CALL: create_file({"path": "reminder_2026-05-01.txt", "content": "Reminder: Scheduled task for May 1, 2026."})
+[action]        → {   "ok": true,   "path": "reminder_2026-05-01.txt",   "size_bytes": 41 }
 
 ─── iter 2 ─────────────────────────────────────
+[memory.read]   2 hits
 [perception]    [done] Store birthday date
-[perception]    [done] Create calendar reminder for May 1 2026
-[perception]    [open] Create calendar reminder for May 15 2026
-[decision]      TOOL_CALL: create_file({"path": "reminder_2026-05-15.txt", "content": "Reminder: Mom's birthday is on May 15, 2026."})
-[action]        → {"ok": true, "path": "reminder_2026-05-15.txt", "size_bytes": 44}
+[perception]    [done] Schedule reminder for May 1 2026
+[perception]    [open] Schedule reminder for May 15 2026
+[decision]      TOOL_CALL: create_file({"content": "Reminder: Mother's birthday on May 15, 2026.", "path": "reminder_2026-05-15.txt"})
+[action]        → {   "ok": true,   "path": "reminder_2026-05-15.txt",   "size_bytes": 44 }
 
 ─── iter 3 ─────────────────────────────────────
-[perception]    [done] all 3 goals
+[memory.read]   3 hits
+[perception]    [done] Store birthday date
+[perception]    [done] Schedule reminder for May 1 2026
+[perception]    [done] Schedule reminder for May 15 2026
 
+[done] all 3 goals satisfied
+
+============================================================
 FINAL: Completed actions:
-  ✓ create_file({"path": "reminder_2026-05-01.txt", ...}) → {"ok": true, "path": "reminder_2026-05-01.txt", "size_bytes": 78}
+  ✓ create_file({"path": "reminder_2026-05-01.txt", ...}) → {"ok": true, "path": "reminder_2026-05-01.txt", "size_bytes": 41}
   ✓ create_file({"path": "reminder_2026-05-15.txt", ...}) → {"ok": true, "path": "reminder_2026-05-15.txt", "size_bytes": 44}
+============================================================
 ```
 
-After this run, `state/memory.json` contains:
+After this run, `state/memory.json` contains the durable fact:
 
 ```json
 {
   "kind": "fact",
   "keywords": ["mom", "birthday", "may", "2026"],
-  "descriptor": "The user's mother's birthday is on May 15, 2026.",
-  "value": {"entity": "mother", "attribute": "birthday", "value": "2026-05-15"}
+  "descriptor": "The user's mother has a birthday on May 15, 2026."
 }
 ```
 
-### Query C run 2 trace — 1 iteration (target 2, max 4) ✅ durable memory hit
+### Query C run 2 — Mom's birthday durable read (1 iteration)
 
 ```
-[boot] run_id=5594687c
+[boot] run_id=a03f65f9
 [boot] query="When is mom's birthday?"
+[boot] mcp tools: ['web_search', 'fetch_url', 'get_time', 'currency_convert', 'read_file', 'list_dir', 'create_file', 'update_file', 'edit_file']
 
 ─── iter 1 ─────────────────────────────────────
 [memory.read]   2 hits
-                - [tool_outcome] create_file(...) -> {"ok": true, "path": "reminder_2026-05-15.txt", ...}
-                - [fact] The user's mother's birthday is on May 15, 2026.
+                - [fact] The user's mother has a birthday on May 15, 2026.
+                - [tool_outcome] create_file(...) -> {
+  "ok": true,
+  "path": "reminder_2026-05-15.txt",
+  "size_bytes": 44
+}
 [perception]    [done] Identify mother's birthday
 
 [done] all 1 goals satisfied
 
-FINAL: From memory: The user's mother's birthday is on May 15, 2026.
+============================================================
+FINAL: From memory: The user's mother has a birthday on May 15, 2026.
+============================================================
 ```
 
 The fact survived run 1 → run 2 via `state/memory.json`. Perception saw it in MEMORY HITS and marked the goal done in iter 1 without dispatching a single tool.
 
-### Query D trace — 3 iterations (target 5-7, max 14) ✅
+### Query D — asyncio synthesis (4 iterations)
 
 ```
-[boot] run_id=bcff1cc6
-[boot] query="Search for 'Python asyncio best practices', read the top 3 results, and give me a short numbered list of the advice they agree on."
+[boot] run_id=83cb6aa5
+[boot] query="Search for 'Python asyncio best practices', read the top 3 results,\nand give me a short numbered list of the advice they agree on."
+[boot] mcp tools: ['web_search', 'fetch_url', 'get_time', 'currency_convert', 'read_file', 'list_dir', 'create_file', 'update_file', 'edit_file']
 
 ─── iter 1 ─────────────────────────────────────
 [memory.read]   0 hits
 [perception]    [open] Search for Python asyncio best practices
-[perception]    [open] Read the top three search results
-[perception]    [open] Identify common advice
-[perception]    [open] Format common advice as a numbered list
+[perception]    [open] Read the top 3 results
+[perception]    [open] Synthesize advice list
 [decision]      TOOL_CALL: web_search({"query": "Python asyncio best practices", "max_results": 5})
-[action]        → [artifact art:c47d8e392ce66810, 10433 bytes]
+[action]        → [artifact art:310bfd9f176abb93, 10293 bytes] preview: {   "title": "Asyncio Best Practices and Common Pitfalls - Shane's Personal Blog",   "url": "https://www.shanechang.com/p/python-asyncio-best-prac...
 
 ─── iter 2 ─────────────────────────────────────
+[memory.read]   3 hits
 [perception]    [done] Search for Python asyncio best practices
-[perception]    [done] Read the top three search results
-[perception]    [open] Identify common advice  attach=art:c47d8e392ce66810
-[perception]    [open] Format common advice as a numbered list
-[attach]        art:c47d8e392ce66810 (10433 bytes)
-[decision]      ANSWER: When working with Python's `asyncio` library, the following are widely recognized as best practices ...
+[perception]    [open] Read the top 3 results  attach=art:310bfd9f176abb93
+[perception]    [open] Synthesize advice list
+[attach]        art:310bfd9f176abb93 (10293 bytes)
+[decision]      ANSWER: To read the top 3 results, we need to access the content of the attached artifacts. ...
 
 ─── iter 3 ─────────────────────────────────────
-[perception]    [done] all 4 goals
+[memory.read]   3 hits
+[perception]    [done] Search for Python asyncio best practices
+[perception]    [done] Read the top 3 results
+[perception]    [open] Synthesize advice list  attach=art:310bfd9f176abb93
+[attach]        art:310bfd9f176abb93 (10293 bytes)
+[decision]      ANSWER: Based on the gathered resources, here is a synthesized list of best practices for working with Python's `asyncio` library: ...
 
-FINAL: When working with Python's `asyncio` library, the following are widely recognized as best practices to ensure performance and prevent common pitfalls:
+─── iter 4 ─────────────────────────────────────
+[memory.read]   3 hits
+[perception]    [done] Search for Python asyncio best practices
+[perception]    [done] Read the top 3 results
+[perception]    [done] Synthesize advice list
 
-*   **Do Not Block the Event Loop:** Never use synchronous, blocking calls (like `time.sleep()` or heavy CPU-bound computations) inside an async function. Use `await asyncio.sleep()` or `loop.run_in_executor()` for blocking work.
-*   **Use `asyncio.run()` as the Entry Point:** Always start your top-level program with `asyncio.run(main())` for proper event-loop lifecycle.
-*   **Leverage Concurrency with Tasks:** Use `asyncio.create_task()` or `asyncio.gather()` for independent coroutines instead of awaiting them sequentially.
-*   **Always Await Coroutines:** Failing to await a coroutine is a common mistake; it returns a coroutine object instead of the result.
-*   **Use Async Context Managers:** Prefer `async with` for network sessions, file handles, etc.
+[done] all 3 goals satisfied
+
+============================================================
+FINAL: - To read the top 3 results, we need to access the content of the attached artifacts. The artifacts contain information about the search results, including their titles, URLs, and snippets. Since the goal is to read the top 3 results, we will provide a final answer based on the information available in the artifacts.
+
+The top 3 results are:
+1. "Asyncio Best Practices and Common Pitfalls - Shane's Personal Blog" - This article discusses best practices and common pitfalls when working with Python's asyncio library. It covers topics such as using `asyncio.run()` as the main entry point, preferring async context managers, and handling cancellation gracefully.
+2. "Asyncio best practices - Async-SIG - Discussions on Python.org" - This discussion on Python.org talks about best practices for writing asynchronous code in Python. It covers topics such as using async/await, avoiding long-running loops, and using tasks for independent operations.
+3. "How to Use asyncio for Concurrent Programming in Python" - This article provides an introduction to using asyncio for concurrent programming in Python. It covers topics such as running blocking code in an async context, creating tasks for independent operations, and handling cancellation gracefully.
+
+- Based on the gathered resources, here is a synthesized list of best practices for working with Python's `asyncio` library:
+
+*   **Proper Entry Point:** Always use `asyncio.run()` to start your asynchronous programs. This function correctly manages the event loop lifecycle, including creation, cleanup, and exception handling.
+*   **Prevent Event Loop Blocking:** Never use blocking synchronous calls (like `time.sleep()` or heavy CPU-bound computations) directly inside an `async` function, as these will halt the entire event loop. Instead, use non-blocking alternatives (e.g., `asyncio.sleep()`) or offload blocking operations to a thread pool using `loop.run_in_executor()`.
+*   **Leverage Concurrency:** Avoid running tasks sequentially if they are independent. Use `asyncio.create_task()` to schedule operations to run concurrently, or utilize `asyncio.gather()` to manage and await multiple tasks at once for better performance.
+*   **Manage Resources Correctly:** Prefer using asynchronous context managers (`async with`) to ensure that resources like network connections or file handles are opened and closed correctly within an async context.
+*   **Handle Cancellations Gracefully:** Always catch `asyncio.CancelledError` within your tasks to perform necessary cleanup operations before the task terminates.
+*   **Enable Debugging:** When troubleshooting complex issues, use `asyncio.run(main(), debug=True)` to enable debug mode, which helps identify issues like unawaited coroutines or unretrieved task exceptions.
+============================================================
 ```
-
-The force-attach safety net (Perception → attach most-recent artifact for synthesis goals) fires on goal 3 ("Identify common advice"). Decision reads the search-results JSON in ATTACHED ARTIFACTS and produces the consolidated numbered list in one call.
-
-## Design notes
-
-- **Gateway routing**: Perception and `memory.remember` pin to Gemini
-  via `provider="g"` and use `auto_route="perception"` / `"memory"` so the
-  dashboard at `localhost:8101/` correctly labels each call. Decision uses
-  `auto_route="decision"` and lets the router pool pick a worker.
-- **Temperature 1.0**: Both Perception and Decision use `temperature=1.0`
-  because Gemini 3.1 flash-lite is observed to loop on identical structured
-  outputs at `temperature=0` (documented in the Session 6 spec).
-- **Position-based goal identity**: The `PerceptionOutput` JSON schema
-  contains no goal id field — the loop maps positions back to stable ids
-  it carries in `prior_goals`. The model cannot hallucinate a stale id
-  because it has no string field in which to write one.
-- **Indexed artifact attachment**: Perception emits `artifact_index: <int>`
-  pointing at one numbered MEMORY HITS entry. The loop translates the
-  index to the actual `art:...` handle. Hallucinated indices are dropped
-  silently; out-of-range or missing artifacts also drop silently.
-- **Force-attach safety net**: If the first unfinished goal contains a
-  synthesis keyword (synthesise/extract/list/compare/decide/summarise/
-  "tell me"/"give me") AND no attach was set AND a hit has an artifact,
-  the loop auto-attaches it. This is the safety net described in the
-  Session 6 spec for Query D's synthesis step.
-- **Action `art:` guard**: If Decision accidentally passes an `art:` handle
-  as a `path` or `url` argument, Action refuses to dispatch and returns
-  a clear error string. This blocks the most common TINY-model
-  hallucination at the dispatch boundary.
-- **Sticky-done**: Once Perception marks a goal `done`, the loop forces
-  it to stay done in every subsequent iteration. The `attach_artifact_id`
-  is also cleared on any goal that is not the next-unfinished one.
-- **Provider-failover retry**: Both `memory.remember` and `perception.observe`
-  try `provider="g"` (Gemini) first, then on any exception retry once with
-  `auto_route=...` and no provider override so the worker-pool failover can
-  pick a different worker. This survives transient Gemini 5xx / quota
-  bumps without crashing the loop.
-
-## What is NOT in scope (Session 6)
-
-- Embedding-based retrieval (Session 7).
-- DAG-based execution (Session 8).
-- A separate Planner Agent (later sessions).
-- Any third-party agent framework (LangGraph, LangChain, CrewAI).
