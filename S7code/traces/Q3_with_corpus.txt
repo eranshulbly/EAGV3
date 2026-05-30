@@ -1,0 +1,42 @@
+Query #3 (with corpus) — single-PDF deep dive (pivoted from compare-type after dense retrieval ceiling identified)
+query: Based on my indexed destinations, what should a first-time visitor see and do in Kyoto's traditional districts, temples, and shrines?
+==============================================================================
+
+[05/30/26 00:58:06] INFO     Processing request of type            server.py:727
+                             ListToolsRequest                                   
+
+══════════════════════════════════════════════════════════════════════════════
+run 56cec136  ─  query: Based on my indexed destinations, what should a first-time visitor see and do in Kyoto's traditional districts, temples, and shrines?
+══════════════════════════════════════════════════════════════════════════════
+[mcp] loaded 12 tools: ['web_search', 'fetch_url', 'get_time', 'currency_convert', 'read_file', 'list_dir', 'create_file', 'update_file', 'edit_file', 'index_document', 'index_pdf', 'search_knowledge']
+
+─── iter 1 ─────────────────────────────────────────────
+[memory.read]   8 hits
+[perception]    ○ g:ea8976bf — Query the existing knowledge base regarding traditional districts, temples, and shrines in Kyoto
+[perception]    ○ g:70424bf5 — Synthesise recommendations for a first-time visitor's itinerary in Kyoto
+[decision]      ANSWER: Kyoto’s traditional districts are packed with historic temples and shrines that give first‑time visitors a clear sense of the city’s cultural heritage. The PDF indexed in the knowledge base notes that...
+
+─── iter 2 ─────────────────────────────────────────────
+[memory.read]   8 hits
+[perception]    ✓ g:ea8976bf — Query the existing knowledge base regarding traditional districts, temples, and shrines in Kyoto
+[perception]    ○ g:70424bf5 — Synthesise recommendations for a first-time visitor's itinerary in Kyoto
+[decision]      ANSWER: For a first-time visitor to Kyoto, the following recommendations synthesize the best ways to experience the city's rich history and culture:
+
+*   **Prioritize UNESCO World Heritage Sites:** Kyoto is h...
+
+─── iter 3 ─────────────────────────────────────────────
+[memory.read]   8 hits
+[perception]    ✓ g:ea8976bf — Query the existing knowledge base regarding traditional districts, temples, and shrines in Kyoto
+[perception]    ✓ g:70424bf5 — Synthesise recommendations for a first-time visitor's itinerary in Kyoto
+
+[done] all 2 goals satisfied
+
+══════════════════════════════════════════════════════════════════════════════
+FINAL: For a first-time visitor to Kyoto, the following recommendations synthesize the best ways to experience the city's rich history and culture:
+
+*   **Prioritize UNESCO World Heritage Sites:** Kyoto is home to 14 of the 17 historic sites inscribed as the "Historic Monuments of Ancient Kyoto." A must-see is the iconic Kinkaku-ji, the magnificent gilded pavilion located in the northern part of the city.
+*   **Utilize Self-Guided Walks:** To explore the city with ease and minimal fuss, take advantage of the city's well-organized self-guided walking routes. These are designed to help you navigate different districts efficiently, often providing specific bus numbers and clearly marked stops to connect you between sites.
+*   **Engage in Cultural Activities:** Beyond sightseeing, immerse yourself in traditional Japanese culture by participating in a Zen meditation session. Authentic experiences are available at sub-temples like Taizo-in and Shunko-in in Northern Kyoto; note that these sessions typically require advance reservations.
+*   **Seasonal Planning:** If you are visiting during the spring, Kyoto is widely considered the premier destination in Japan for viewing cherry blossoms, offering numerous scenic spots throughout the city.
+══════════════════════════════════════════════════════════════════════════════
+

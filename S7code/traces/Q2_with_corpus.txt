@@ -1,0 +1,89 @@
+Query #2 (with corpus)
+timestamp: 2026-05-30T00:14:13
+query: Which of my indexed destinations are best for solo female travelers on a tight budget?
+==============================================================================
+
+
+══════════════════════════════════════════════════════════════════════════════
+run 5c3e7aea  ─  query: Which of my indexed destinations are best for solo female travelers on a tight budget?
+══════════════════════════════════════════════════════════════════════════════
+[mcp] loaded 12 tools: ['web_search', 'fetch_url', 'get_time', 'currency_convert', 'read_file', 'list_dir', 'create_file', 'update_file', 'edit_file', 'index_document', 'index_pdf', 'search_knowledge']
+
+─── iter 1 ─────────────────────────────────────────────
+[memory.read]   8 hits
+[perception]    ○ g:ccd1bbb4 — Query the existing knowledge base for destinations suitable for solo female budget travelers
+[perception]    ○ g:df93c191 — Synthesise a recommendation of the best destinations based on the retrieved information
+[decision]      TOOL_CALL: search_knowledge({"query": "solo female budget travelers safe affordable destinations", "k": 5})
+[action]        → {   "id": "mem:7f22a386",   "descriptor": "[sandbox:travel/Bangkok.pdf pp.19-20, chunk 28/76] tourist's agenda. The cheapest and most popular option is the Chao Phraya Express Boat (http://www.chaophr...
+
+─── iter 2 ─────────────────────────────────────────────
+[memory.read]   8 hits
+[perception]    ✓ g:ccd1bbb4 — Query the existing knowledge base for destinations suitable for solo female budget travelers
+[perception]    ○ g:df93c191 — Synthesise a recommendation of the best destinations based on the retrieved information
+[decision]      ANSWER: Based on the retrieved information, here are my recommendations for the best destinations for solo female travelers on a tight budget:
+
+## **Top Recommendations**
+
+### 1. **Bangkok, Thailand** ⭐ Best ...
+
+─── iter 3 ─────────────────────────────────────────────
+[memory.read]   8 hits
+[perception]    ✓ g:ccd1bbb4 — Query the existing knowledge base for destinations suitable for solo female budget travelers
+[perception]    ✓ g:df93c191 — Synthesise a recommendation of the best destinations based on the retrieved information
+
+[done] all 2 goals satisfied
+
+══════════════════════════════════════════════════════════════════════════════
+FINAL: Based on the retrieved information, here are my recommendations for the best destinations for solo female travelers on a tight budget:
+
+## **Top Recommendations**
+
+### 1. **Bangkok, Thailand** ⭐ Best Overall
+- **Budget-friendly**: The Chao Phraya Express Boat is the cheapest and most popular transport option, serving major attractions like the Grand Palace and Wat Pho
+- **Accessible**: Easy to navigate with affordable public transportation
+- **Cultural richness**: Plenty of temples and cultural sites to explore
+
+### 2. **Bali, Indonesia** ⭐ Best for Accommodation Variety
+- **Budget accommodation**: Kuta offers the cheapest lodging options on the island
+- **Flexible pricing**: Wide range from budget digs in Kuta to mid-range options in Sanur and Jimbaran
+- **Diverse experiences**: Choose between beaches, cultural pursuits in Ubud, or surfing areas
+
+### 3. **London, UK** ⭐ Best for Free Attractions
+- **Free activities**: Many smaller and lesser-known attractions are free, offering plenty of choice for budget travelers
+- **Cultural scene**: One of the world's most lively live music scenes with diverse genres
+- **Solo-friendly**: Well-established tourist infrastructure
+
+### 4. **Prague, Czech Republic** ⭐ Best for Food Budgeting
+- **Affordable dining**: Discounted lunch menus available almost everywhere between 11:00-14:00
+- **Cultural experience**: Traditional Czech cuisine at reasonable prices
+- **Walkable city**: Easy to explore on foot, saving on transport costs
+
+## **Destinations to Avoid**
+
+### ❌ **Petra, Jordan**
+- **Safety concerns**: Explicit warnings about female travelers facing financial scams, uncomfortable situations, and harassment
+- **Cultural challenges**: Western women may face unwanted attention and misinterpretations of basic interactions
+
+### ❌ **Greenland**
+- **Expensive permits**: Non-refundable expedition permit fee of kr 4000 required for hiking in many areas
+- **Limited budget options**: High costs for outdoor activities and remote travel
+
+## **Final Ranking for Solo Female Budget Travelers:**
+1. **Bangkok** - Best combination of affordability, safety, and cultural experiences
+2. **Bali** - Excellent budget accommodation options with diverse activities
+3. **London** - Great for free attractions and cultural experiences
+4. **Prague** - Good for budget dining and walkable exploration
+══════════════════════════════════════════════════════════════════════════════
+
+
+--- stderr ---
+[05/30/26 00:14:00] INFO     Processing request of type            server.py:727
+                             ListToolsRequest                                   
+[05/30/26 00:14:04] INFO     Processing request of type            server.py:727
+                             CallToolRequest                                    
+                    INFO     HTTP Request: GET                   _client.py:1025
+                             http://localhost:8107/v1/routers                   
+                             "HTTP/1.1 200 OK"                                  
+                    INFO     HTTP Request: POST                  _client.py:1025
+                             http://localhost:8107/v1/embed                     
+                             "HTTP/1.1 200 OK"                                  
