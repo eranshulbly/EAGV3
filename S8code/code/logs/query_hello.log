@@ -1,0 +1,13 @@
+
+══════════════════════════════════════════════════════════════════════════════
+session s8-4e42be33  ─  query: Say hello in one short sentence.
+══════════════════════════════════════════════════════════════════════════════
+[memory.read] 8 hit(s) visible to every skill this run
+[n:1] planner            complete (1.6s)
+[n:2] writer             complete (3.1s)
+[n:3] formatter          complete (4.3s)
+
+══════════════════════════════════════════════════════════════════════════════
+FINAL: Hello, it is wonderful to meet you today!
+══════════════════════════════════════════════════════════════════════════════
+

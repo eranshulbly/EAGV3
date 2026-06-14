@@ -1,0 +1,25 @@
+[06/13/26 23:05:56] INFO     Processing request of type            server.py:727
+                             CallToolRequest                                    
+[06/13/26 23:05:57] INFO     response:                                lib.rs:444
+                             https://grokipedia.com/api/typeahead?que           
+                             ry=current+population+and+annual+growth+           
+                             rate+of+Cairo+2024+2025&limit=1 200                
+                    INFO     response:                                lib.rs:444
+                             https://en.wikipedia.org/w/api.php?actio           
+                             n=opensearch&profile=fuzzy&limit=1&searc           
+                             h=current%20population%20and%20annual%20           
+                             growth%20rate%20of%20Cairo%202024%202025           
+                              200                                               
+                    INFO     response:                                lib.rs:444
+                             https://www.google.com/search?q=current+           
+                             population+and+annual+growth+rate+of+Cai           
+                             ro+2024+2025&filter=1&start=0&hl=en-US&l           
+                             r=lang_en&cr=countryUS 200                         
+[06/13/26 23:05:58] INFO     response:                                lib.rs:444
+                             https://search.yahoo.com/search;_ylt=5dl           
+                             31j3NhiBog8Jz9jmiEk4K;_ylu=higGqQvyConAq           
+                             3LMKqpxqtN7ngFNkIs1GYY0q3tumfvUKYw?p=cur           
+                             rent+population+and+annual+growth+rate+o           
+                             f+Cairo+2024+2025 200                              
+[06/13/26 23:05:59] INFO     Processing request of type            server.py:727
+                             ListToolsRequest                                   
